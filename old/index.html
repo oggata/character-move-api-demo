@@ -593,64 +593,9 @@ function isLocalhost(url) {
 }
 
 // ─── MOCK API ─────────────────────────────────────────────────────────────────
-// Returns array of 10 steps as [{x, y}, ...] (y = z-axis)
-function mockApi(startX, startZ) {
-  const steps = [];
-  let cur = { x: startX, z: startZ };
-  for (let i = 0; i < 10; i++) {
-    cur = randomStep(cur);
-    steps.push({ x: cur.x, y: cur.z });
-  }
-  return Promise.resolve(steps);
-}
-
-// Generate N random enemy steps from a starting position
-function mockEnemySteps(startPos, n) {
-  const steps = [];
-  let cur = { ...startPos };
-  for (let i = 0; i < n; i++) {
-    cur = randomStep(cur);
-    steps.push({ ...cur });
-  }
-  return steps;
-}
-
-// ─── STEP QUEUE ───────────────────────────────────────────────────────────────
-// Each item: { heroTo, enemyTo }
-let stepQueue = [];
-
-function processQueue() {
-  if (stepQueue.length === 0) {
-    // All steps done
-    busy = false;
-    document.getElementById('btn-move').disabled = false;
-    setLog(`done — HERO [${hero.x},${hero.z}]  ENEMY [${enemy.x},${enemy.z}]`, false);
-    return;
-  }
-
-  const step = stepQueue.shift();
-  const remaining = stepQueue.length;
-
-  // Update logical positions
-  const prevHero  = { ...hero };
-  const prevEnemy = { ...enemy };
-  hero  = step.heroTo;
-  enemy = step.enemyTo;
-
-  moveCount++;
-  updateStats();
-  updateCoords();
-  setLog(`step ${moveCount}  →  HERO [${hero.x},${hero.z}]  ENEMY [${enemy.x},${enemy.z}]  (${remaining} left)`, true);
-
-  // Start animations for both
-  heroAnim  = startAnim(prevHero,  hero,  null);
-  enemyAnim = startAnim(prevEnemy, enemy, null);
-
-  // After animation completes, check hit then proceed to next step
-  setTimeout(() => {
-    checkHit();
-    processQueue();
-  }, ANIM_DURATION * 1000 + 40);
+function mockApi(currentX, currentZ) {
+  const next = randomStep({ x: currentX, z: currentZ });
+  return Promise.resolve({ x: next.x, y: next.z }); // API returns x,y (y=row=z)
 }
 
 // ─── MAIN ACTION ─────────────────────────────────────────────────────────────
@@ -661,40 +606,45 @@ async function doMove() {
   setLog('fetching…', true);
 
   try {
-    let heroSteps; // [{x, y}, ...]
+    let newPos;
     const url = document.getElementById('api-url').value.trim();
 
     if (isLocalhost(url)) {
-      await new Promise(r => setTimeout(r, 100));
-      heroSteps = await mockApi(hero.x, hero.z);
+      // Mock
+      await new Promise(r => setTimeout(r, 120)); // tiny delay for realism
+      const data = await mockApi(hero.x, hero.z);
+      newPos = { x: clamp(data.x, 0, GRID-1), z: clamp(data.y, 0, GRID-1) };
+      setLog(`mock → HERO moves to [${newPos.x}, ${newPos.z}]`, false);
     } else {
       const res = await fetch(url);
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
-      // Accept array or single object
-      heroSteps = Array.isArray(data) ? data : [data];
-      if (!heroSteps.every(s => s.x != null && s.y != null)) {
-        throw new Error('invalid JSON — need [{x, y}, ...]');
-      }
+      if (data.x == null || data.y == null) throw new Error('invalid JSON — need {x, y}');
+      newPos = { x: clamp(Math.round(data.x), 0, GRID-1), z: clamp(Math.round(data.y), 0, GRID-1) };
+      setLog(`api → HERO moves to [${newPos.x}, ${newPos.z}]`, false);
     }
 
-    // Clamp hero steps
-    heroSteps = heroSteps.map(s => ({
-      x: clamp(Math.round(s.x), 0, GRID - 1),
-      z: clamp(Math.round(s.y), 0, GRID - 1)
-    }));
+    // Animate hero
+    const prevHero = {...hero};
+    heroAnim = startAnim(prevHero, newPos, null);
+    hero = newPos;
 
-    // Generate matching enemy steps
-    const enemySteps = mockEnemySteps(enemy, heroSteps.length);
+    // Animate enemy (random)
+    const prevEnemy = {...enemy};
+    const newEnemy = randomStep(enemy);
+    enemyAnim = startAnim(prevEnemy, newEnemy, null);
+    enemy = newEnemy;
 
-    // Build queue
-    stepQueue = heroSteps.map((h, i) => ({
-      heroTo:  h,
-      enemyTo: enemySteps[i]
-    }));
+    moveCount++;
+    updateStats();
+    updateCoords();
 
-    setLog(`${heroSteps.length} steps queued — executing…`, true);
-    processQueue();
+    // Check hit after anim settles
+    setTimeout(() => {
+      checkHit();
+      busy = false;
+      document.getElementById('btn-move').disabled = false;
+    }, ANIM_DURATION * 1000 + 50);
 
   } catch (err) {
     setLog(`error: ${err.message}`, false);
@@ -709,7 +659,6 @@ function doReset() {
   enemy = { x: 2, z: 7 };
   heroAnim  = null;
   enemyAnim = null;
-  stepQueue = [];
   placeAt(heroChar,  hero.x,  hero.z);
   placeAt(enemyChar, enemy.x, enemy.z);
   moveCount = 0;
